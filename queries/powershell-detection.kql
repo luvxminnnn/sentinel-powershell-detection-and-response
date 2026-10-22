@@ -1,0 +1,10 @@
+SecurityEvent
+| where EventID == 4688
+| where Process has "powershell.exe"
+| extend SuspiciousReason = case(
+    CommandLine has "EncodedCommand", "Encoded PowerShell",
+    CommandLine has "NoProfile", "PowerShell without profile",
+    "Other"
+)
+| where SuspiciousReason != "Other"
+| project TimeGenerated, Computer, Account, Process, ParentProcessName, SuspiciousReason, CommandLine
