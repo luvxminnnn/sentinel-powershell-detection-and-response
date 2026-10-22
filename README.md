@@ -44,6 +44,17 @@ The Windows virtual machine was used as the monitored endpoint.
 
 Windows Security Events were collected through Azure Monitor Agent and forwarded to the Log Analytics workspace used by Microsoft Sentinel.
 
+![Azure resource group overview](screenshots/01-resource-group-overview.png)
+
+![Windows VM overview](screenshots/02-vm-overview.png)
+
+![RDP NSG restriction](screenshots/03-nsg-rdp-restriction.png)
+
+![Microsoft Sentinel workspace overview](screenshots/04-sentinel-workspace-overview.png)
+
+![Windows Security Events DCR](screenshots/05-dcr-windows-security-events.png)
+
+
 ---
 
 ## Architecture
@@ -103,6 +114,7 @@ auditpol /get /subcategory:"Process Creation"
 ```
 
 This allowed Microsoft Sentinel to receive process creation events containing the executed command line.
+![Process creation auditing enabled](screenshots/08-process-creation-auditing-enabled.png)
 
 ---
 
@@ -129,6 +141,7 @@ Get-Date
 ```
 
 The command was intentionally harmless and was used only to generate telemetry that resembles suspicious PowerShell execution.
+![PowerShell test activity](screenshots/08a-powershell-test-activity.png)
 
 ---
 
@@ -140,6 +153,8 @@ The first step was confirming that Windows Security Events were successfully rea
 SecurityEvent
 | take 20
 ```
+![SecurityEvent logs received in Sentinel](screenshots/06-securityevent-logs.png)
+
 
 Process creation events were then reviewed:
 
@@ -150,6 +165,7 @@ SecurityEvent
 | project TimeGenerated, Computer, Account, Process, CommandLine
 | order by TimeGenerated desc
 ```
+![Initial KQL process hunt](screenshots/07-initial-kql-process-hunt.png)
 
 This confirmed that process telemetry from the Windows VM was available for investigation.
 
@@ -167,7 +183,7 @@ SecurityEvent
 | project TimeGenerated, Computer, Account, Process, ParentProcessName, CommandLine
 | order by TimeGenerated desc
 ```
-
+![PowerShell process events](screenshots/09-powershell-process-events.png)
 The results showed the PowerShell activity generated on the endpoint.
 
 ---
@@ -185,7 +201,7 @@ SecurityEvent
 | project TimeGenerated, Computer, Account, Process, ParentProcessName, CommandLine
 | order by TimeGenerated desc
 ```
-
+![Suspicious PowerShell hunt](screenshots/10-suspicious-powershell-hunt.png)
 Both test commands were successfully identified.
 
 ---
@@ -213,7 +229,7 @@ This produced two classifications:
 
 - Encoded PowerShell
 - PowerShell without profile
-
+![PowerShell detection classification](screenshots/11-powershell-detection-classification.png)
 ---
 
 ## Microsoft Sentinel Analytics Rule
@@ -256,6 +272,9 @@ Entity mapping was configured for:
 
 - Host
 - Account
+![Analytics rule detection logic](screenshots/12a-analytics-rule-detection-logic.png)
+
+![Analytics rule scheduling](screenshots/12b-analytics-rule-scheduling.png)
 
 ---
 
@@ -293,6 +312,7 @@ The incident contained:
 - affected user account;
 - associated alert;
 - host and account entity relationships.
+![Suspicious PowerShell incident](screenshots/13-suspicious-powershell-incident.png)
 
 This confirmed the complete detection pipeline:
 
@@ -335,6 +355,9 @@ The investigation confirmed:
 - the related alert;
 - the mapped MITRE ATT&CK tactic;
 - the relationship between the affected user and host.
+![Incident investigation view](screenshots/14-incident-investigation-view.png)
+
+![Incident summary](screenshots/15-incident-summary.png)
 
 The generated activity in this lab was authorized and intentionally created for testing.
 
@@ -449,7 +472,8 @@ screenshots/
 ├── 05-dcr-windows-security-events.png
 ├── 06-securityevent-logs.png
 ├── 07-initial-kql-process-hunt.png
-├── 08-powershell-test-activity.png
+├── 08-process-creation-auditing-enabled.png
+├── 08a-powershell-test-activity.png
 ├── 09-powershell-process-events.png
 ├── 10-suspicious-powershell-hunt.png
 ├── 11-powershell-detection-classification.png
@@ -483,7 +507,8 @@ sentinel-powershell-detection-and-response/
     ├── 05-dcr-windows-security-events.png
     ├── 06-securityevent-logs.png
     ├── 07-initial-kql-process-hunt.png
-    ├── 08-powershell-test-activity.png
+    ├── 08-process-creation-auditing-enabled.png
+    ├── 08a-powershell-test-activity.png
     ├── 09-powershell-process-events.png
     ├── 10-suspicious-powershell-hunt.png
     ├── 11-powershell-detection-classification.png
