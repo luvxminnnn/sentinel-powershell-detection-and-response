@@ -1,247 +1,265 @@
 # Incident Report: Suspicious PowerShell Execution
 
-## Incident Summary
+## Incident summary
 
-Microsoft Sentinel generated a medium-severity incident after detecting PowerShell process creation with suspicious command-line arguments on the monitored Windows endpoint.
+Microsoft Sentinel generated a Medium-severity incident after detecting encoded PowerShell execution on the monitored Windows endpoint.
 
-The incident was created by the custom analytics rule:
+Analytics rule:
 
 `Suspicious PowerShell Execution`
 
-The rule detected PowerShell execution using either:
+The activity was generated intentionally in a controlled lab environment for detection-engineering and incident-investigation testing.
 
-- `-EncodedCommand`
-- `-NoProfile`
+Final classification:
 
-The activity was generated intentionally in a controlled lab environment for detection engineering and incident investigation practice.
+`Benign Positive — authorized security testing`
 
----
+## Affected assets
 
-## Affected Assets
-
-### Host
+Host:
 
 `win-blue-team-lab`
 
-### User
+User:
 
 `azureuser`
 
-The incident associated the affected user account with the monitored Windows host.
+The incident associated the affected user with the monitored Windows endpoint.
 
----
+## Detection source
 
-## Detection Source
+The detection was based on:
 
-The detection was based on Windows Security Event ID:
+`Windows Security Event ID 4688 — A new process has been created`
 
-`4688 — A new process has been created`
+Process Creation auditing and command-line logging were enabled before the test activity was generated.
 
-Process Creation auditing and command-line logging were enabled on the endpoint before the test activity was generated.
+Telemetry was collected through:
 
-Windows Security Events were collected through Azure Monitor Agent and forwarded to the Log Analytics workspace used by Microsoft Sentinel.
+- Windows Security auditing;
+- Azure Monitor Agent;
+- Data Collection Rule;
+- Log Analytics;
+- Microsoft Sentinel.
 
----
+## Controlled test activity
 
-## Detection Logic
+Two PowerShell commands were generated.
 
-The analytics rule used the following KQL:
-
-```kql
-SecurityEvent
-| where EventID == 4688
-| where Process has "powershell.exe"
-| extend SuspiciousReason = case(
-    CommandLine has "EncodedCommand", "Encoded PowerShell",
-    CommandLine has "NoProfile", "PowerShell without profile",
-    "Other"
-)
-| where SuspiciousReason != "Other"
-| project TimeGenerated, Computer, Account, Process, ParentProcessName, SuspiciousReason, CommandLine
-```
-
-The rule was configured to run every 5 minutes and analyze the previous 10 minutes of data.
-
-An alert was generated whenever the query returned at least one result.
-
----
-
-## Observed Activity
-
-Two controlled PowerShell commands were used during the lab.
-
-The first command used `-NoProfile`:
+### Control case
 
 ```powershell
 powershell.exe -NoProfile -Command "Get-Process | Select-Object -First 5"
 ```
 
-The second used `-EncodedCommand`:
+This command used `-NoProfile` but did not use encoded execution.
+
+### Positive case
 
 ```powershell
 powershell.exe -NoProfile -EncodedCommand RwBlAHQALQBEAGEAdABlAA==
 ```
 
-The encoded content represented the harmless command:
+The encoded content decoded to:
 
 ```powershell
 Get-Date
 ```
 
-Both executions generated Event ID `4688` and were ingested into Microsoft Sentinel.
+Both executions generated Event ID `4688` process-creation telemetry.
 
----
+## Detection tuning
 
-## Investigation Findings
+The initial detection treated both of the following as suspicious:
+
+- `-NoProfile`
+- `-EncodedCommand`
+
+Testing showed that this logic was too broad.
+
+`-NoProfile` is commonly used in legitimate PowerShell administration and scripting, so it was removed as a standalone alert condition.
+
+The final detection now alerts on encoded PowerShell execution.
+
+`-NoProfile` is retained only as investigation context.
+
+## Final detection logic
+
+The final query:
+
+1. filters for Event ID `4688`;
+2. identifies `powershell.exe` and `pwsh.exe`;
+3. normalizes process and command-line values;
+4. detects encoded-command usage;
+5. records whether `-NoProfile` is present;
+6. generates results only when encoded execution is detected.
+
+The complete current detection query is stored in:
+
+[`queries/powershell-detection.kql`](queries/powershell-detection.kql)
+
+Keeping the query in a dedicated file avoids duplicating detection logic across the repository.
+
+## Investigation findings
 
 The investigation confirmed that:
 
-- PowerShell was executed on `win-blue-team-lab`;
-- the execution generated Windows process creation events;
-- the command line contained suspicious arguments monitored by the analytics rule;
-- Microsoft Sentinel generated the expected alert;
-- the alert created an incident automatically;
-- the affected host and user were associated with the incident;
-- the activity was mapped to the MITRE ATT&CK Execution tactic;
-- no malicious payload was executed during the test.
+- PowerShell executed on `win-blue-team-lab`;
+- Windows generated Event ID `4688`;
+- command-line information was available in Sentinel;
+- the positive test contained encoded PowerShell execution;
+- the control test used `-NoProfile` without encoded execution;
+- the tuned rule preserved detection of the encoded command;
+- the `NoProfile`-only control case was no longer treated as sufficient for detection;
+- Microsoft Sentinel generated the expected incident;
+- no malicious payload was executed.
 
-The activity was therefore classified as:
+The encoded payload contained only:
 
-`Benign / Authorized Security Testing`
+`Get-Date`
 
----
+## MITRE ATT&CK mapping
 
-## MITRE ATT&CK Mapping
-
-### Tactic
+Tactic:
 
 `Execution`
 
-### Technique
+Technique:
 
 `T1059 — Command and Scripting Interpreter`
 
-### Sub-technique
+Sub-technique:
 
 `T1059.001 — PowerShell`
 
-PowerShell itself is not malicious. The detection focuses on command-line behavior that may require analyst review.
+PowerShell itself is not malicious. The rule focuses on a command-line behavior that increases investigation priority.
 
----
+## Analyst assessment
 
-## Analyst Assessment
+Encoded PowerShell can be used legitimately, but it can also make command content less immediately visible to an analyst.
 
-The alert successfully identified the intended suspicious PowerShell behavior.
+A detection should therefore trigger investigation rather than automatically proving malicious activity.
 
-However, the presence of `-NoProfile` or `-EncodedCommand` alone is not enough to confirm malicious activity.
+Relevant context includes:
 
-Both arguments may be used legitimately by administrators, automation tools, or deployment scripts.
-
-The incident therefore requires additional context before containment actions are taken.
-
-Relevant context would include:
-
+- complete command line;
+- decoded PowerShell content;
 - parent process;
-- complete command content;
-- user behavior;
+- user account;
 - recent authentication activity;
-- other process creation events;
-- network activity;
+- related process creation;
+- network connections;
+- file creation;
 - endpoint history;
 - PowerShell Script Block Logging;
 - EDR telemetry.
 
----
+In this lab, the encoded command was harmless and intentionally generated.
 
-## Recommended Response
-
-For a similar incident in a production environment, the analyst should:
-
-1. Review the complete PowerShell command line.
-2. Identify the parent process.
-3. Confirm whether the user normally performs PowerShell administration.
-4. Review authentication events associated with the account.
-5. Search for related PowerShell activity on other endpoints.
-6. Review process activity before and after the alert.
-7. Check for persistence mechanisms such as scheduled tasks, services, or startup entries.
-8. Review network activity generated by the PowerShell process.
-9. Determine whether the execution was authorized.
-
-If malicious activity is confirmed:
-
-- isolate the affected endpoint;
-- terminate malicious processes;
-- disable or reset compromised accounts;
-- remove persistence mechanisms;
-- search for related indicators across the environment;
-- preserve logs and evidence;
-- continue incident response and forensic investigation.
-
----
-
-## Root Cause
-
-The incident was intentionally triggered by controlled PowerShell test activity.
-
-No real compromise occurred.
-
-The purpose of the activity was to validate the complete detection pipeline:
-
-```text
-PowerShell Execution
-        |
-        v
-Windows Event ID 4688
-        |
-        v
-Azure Monitor Agent
-        |
-        v
-Log Analytics
-        |
-        v
-KQL Detection
-        |
-        v
-Sentinel Analytics Rule
-        |
-        v
-Alert
-        |
-        v
-Incident
-```
-
----
-
-## Final Classification
+## Final classification
 
 **Classification:** Benign Positive
 
-**Reason:** Authorized security testing generated behavior intentionally designed to match the analytics rule.
+**Reason:** Authorized security testing intentionally generated the encoded PowerShell activity.
 
 **Severity:** Medium
 
 **Status:** Investigation completed
 
----
+## Recommended response
 
-## Lessons Learned
+For a similar production incident, an analyst should:
 
-This incident demonstrated the importance of combining detection logic with investigation context.
+1. Review the complete PowerShell command line.
+2. Decode encoded content in a safe analysis environment.
+3. Identify the parent process.
+4. Validate the user and host involved.
+5. Review related authentication events.
+6. Search for additional PowerShell activity.
+7. Check for child processes and file creation.
+8. Review network activity.
+9. Check for persistence mechanisms.
+10. Determine whether the execution was authorized.
 
-A detection based only on suspicious command-line arguments may generate false positives in a production environment.
+If malicious activity is confirmed, possible response actions include:
 
-Future improvements could include:
+- isolating the affected endpoint;
+- terminating malicious processes;
+- disabling or resetting compromised accounts;
+- removing persistence;
+- hunting for related activity across other systems;
+- preserving logs and forensic evidence;
+- continuing incident response.
 
-- PowerShell Script Block Logging;
-- Event ID `4104`;
-- suspicious parent-child process correlation;
-- authentication correlation;
-- user baselining;
-- approved-script allowlists;
-- Microsoft Defender for Endpoint telemetry;
-- network telemetry;
-- automated enrichment in Microsoft Sentinel.
+## Detection limitations
 
-These improvements would provide stronger context and improve detection quality.
+The final rule intentionally focuses on encoded PowerShell execution.
+
+Possible legitimate matches include:
+
+- administration scripts;
+- software deployment tools;
+- endpoint-management platforms;
+- automation systems;
+- approved encoded PowerShell commands.
+
+Current limitations include:
+
+- encoded execution alone does not establish malicious intent;
+- payload content is not automatically decoded by the detection;
+- parent-process context is not part of the alert condition;
+- user and host baselines are not included;
+- network behavior is not correlated;
+- PowerShell Script Block Logging is not included.
+
+Production improvements could include:
+
+- Event ID `4104` Script Block Logging;
+- automated encoded-command decoding;
+- parent-child process correlation;
+- approved-script baselines;
+- user and host baselines;
+- Defender for Endpoint telemetry;
+- network correlation;
+- suspicious PowerShell behavior scoring.
+
+## What changed after testing
+
+| Finding | Change |
+|---|---|
+| `NoProfile` generated unnecessary detection noise | Removed it as a standalone alert condition |
+| `NoProfile` still provides useful context | Retained it as an output field |
+| Detection focused only on Windows PowerShell | Added `pwsh.exe` support |
+| Command comparison could vary by case | Normalized process and command-line values |
+| Positive and control cases were mixed together | Separated encoded execution from benign control activity |
+
+## Outcome
+
+The final workflow was:
+
+```text
+PowerShell Process Creation
+        |
+        v
+Event ID 4688
+        |
+        v
+Command-Line Collection
+        |
+        v
+EncodedCommand Detection
+        |
+        v
+Sentinel Analytics Rule
+        |
+        v
+Incident
+        |
+        v
+Analyst Investigation
+        |
+        v
+Benign Positive Classification
+```
+
+The tuned rule reduced unnecessary noise from `-NoProfile` while preserving detection of the encoded PowerShell test activity.

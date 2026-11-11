@@ -1,65 +1,62 @@
 # Suspicious PowerShell Detection and Incident Investigation with Microsoft Sentinel
 
-## Overview
+Blue Team lab for detecting suspicious PowerShell execution with Microsoft Sentinel.
 
-This project demonstrates a complete Blue Team detection and investigation workflow using Microsoft Sentinel.
+The project covers Windows process creation telemetry, KQL detection engineering, positive and negative testing, rule tuning, Sentinel analytics, incident generation, investigation, and response planning.
 
-The objective was to simulate suspicious PowerShell activity on a Windows virtual machine, collect the relevant Windows security telemetry, detect the activity with KQL, create a scheduled analytics rule, and investigate the resulting Microsoft Sentinel incident.
+## Results
 
-The project focuses on practical SOC skills such as endpoint logging, threat hunting, detection engineering, MITRE ATT&CK mapping, alert generation, and incident investigation.
+| Area | Result |
+|---|---|
+| Telemetry | Windows Event ID `4688` successfully collected |
+| Command-line visibility | Process creation command lines captured in Sentinel |
+| Positive detection | PowerShell using `-EncodedCommand` detected |
+| Negative/control test | `-NoProfile` without encoded execution no longer alerts after tuning |
+| Detection tuning | Broad `NoProfile` condition removed from alert logic |
+| Analytics | Scheduled Sentinel analytics rule generated incidents |
+| Investigation | Host, user, process, parent process, and command line reviewed |
+| MITRE ATT&CK | PowerShell execution mapped to ATT&CK |
+| Final classification | Benign Positive — authorized lab activity |
 
----
+## Detection flow
 
-## Project Objectives
+```text
+PowerShell Process Creation
+        |
+        v
+Windows Event ID 4688
+        |
+        v
+Azure Monitor Agent
+        |
+        v
+Log Analytics
+        |
+        v
+KQL Detection
+        |
+        v
+EncodedCommand Match
+        |
+        v
+Microsoft Sentinel Analytics Rule
+        |
+        v
+Incident Investigation
+```
 
-The main goals of the project were to:
-
-- deploy a Windows endpoint in Azure;
-- collect Windows Security Events using Azure Monitor Agent;
-- enable Windows Process Creation auditing;
-- generate controlled PowerShell activity;
-- identify suspicious PowerShell execution using KQL;
-- create a reusable detection rule;
-- map the activity to MITRE ATT&CK;
-- automatically generate a Microsoft Sentinel incident;
-- investigate the affected host and user;
-- document appropriate response and remediation steps.
-
----
-
-## Lab Environment
-
-The lab environment consisted of:
+## Environment
 
 - Microsoft Azure
-- Windows Server 2025 virtual machine
+- Windows Server 2025
 - Microsoft Sentinel
 - Log Analytics Workspace
 - Azure Monitor Agent
 - Data Collection Rule
 - Windows Security Event logs
-- Kusto Query Language (KQL)
+- Kusto Query Language
 
-The Windows virtual machine was used as the monitored endpoint.
-
-Windows Security Events were collected through Azure Monitor Agent and forwarded to the Log Analytics workspace used by Microsoft Sentinel.
-
-![Azure resource group overview](screenshots/01-resource-group-overview.png)
-
-![Windows VM overview](screenshots/02-vm-overview.png)
-
-![RDP NSG restriction](screenshots/03-nsg-rdp-restriction.png)
-
-![Microsoft Sentinel workspace overview](screenshots/04-sentinel-workspace-overview.png)
-
-![Windows Security Events DCR](screenshots/05-dcr-windows-security-events.png)
-
-
----
-
-## Architecture
-
-The telemetry flow used in this project was:
+## Lab architecture
 
 ```text
 Windows VM
@@ -79,23 +76,16 @@ Log Analytics Workspace
    v
 Microsoft Sentinel
    |
-   +--> KQL Threat Hunting
+   +--> KQL Hunting
    |
    +--> Analytics Rule
    |
-   +--> Alert
-   |
-   v
-Sentinel Incident
+   +--> Incident
 ```
 
----
+## Windows telemetry configuration
 
-## Windows Telemetry Configuration
-
-Process Creation auditing was enabled on the Windows endpoint in order to generate Event ID `4688`.
-
-The following configuration was used:
+Process Creation auditing was enabled to generate Event ID `4688`.
 
 ```powershell
 auditpol /set /subcategory:"Process Creation" /success:enable
@@ -113,22 +103,21 @@ The configuration was verified with:
 auditpol /get /subcategory:"Process Creation"
 ```
 
-This allowed Microsoft Sentinel to receive process creation events containing the executed command line.
 ![Process creation auditing enabled](screenshots/08-process-creation-auditing-enabled.png)
 
----
+## Controlled PowerShell activity
 
-## Test Activity
+Two test cases were generated.
 
-Controlled PowerShell activity was generated on the monitored Windows endpoint.
-
-A normal PowerShell command was executed first:
+### Control case
 
 ```powershell
 powershell.exe -NoProfile -Command "Get-Process | Select-Object -First 5"
 ```
 
-A second command used the `-EncodedCommand` argument:
+This command uses `-NoProfile`, but does not use encoded execution.
+
+### Positive case
 
 ```powershell
 powershell.exe -NoProfile -EncodedCommand RwBlAHQALQBEAGEAdABlAA==
@@ -140,365 +129,171 @@ The encoded content decodes to:
 Get-Date
 ```
 
-The command was intentionally harmless and was used only to generate telemetry that resembles suspicious PowerShell execution.
 ![PowerShell test activity](screenshots/08a-powershell-test-activity.png)
 
----
+## Initial hunting
 
-## Initial Log Validation
+Event ID `4688` records process creation.
 
-The first step was confirming that Windows Security Events were successfully reaching Microsoft Sentinel.
+The initial KQL hunt identified PowerShell process creation events in Sentinel.
 
-```kql
-SecurityEvent
-| take 20
-```
-![SecurityEvent logs received in Sentinel](screenshots/06-securityevent-logs.png)
+![Initial process hunt](screenshots/07-initial-kql-process-hunt.png)
 
-
-Process creation events were then reviewed:
-
-```kql
-SecurityEvent
-| where TimeGenerated > ago(1h)
-| where Process has_any ("powershell.exe", "pwsh.exe", "cmd.exe")
-| project TimeGenerated, Computer, Account, Process, CommandLine
-| order by TimeGenerated desc
-```
-![Initial KQL process hunt](screenshots/07-initial-kql-process-hunt.png)
-
-This confirmed that process telemetry from the Windows VM was available for investigation.
-
----
-
-## PowerShell Threat Hunt
-
-PowerShell process creation events were filtered using Event ID `4688`.
-
-```kql
-SecurityEvent
-| where TimeGenerated > ago(30m)
-| where EventID == 4688
-| where Process has "powershell.exe"
-| project TimeGenerated, Computer, Account, Process, ParentProcessName, CommandLine
-| order by TimeGenerated desc
-```
 ![PowerShell process events](screenshots/09-powershell-process-events.png)
-The results showed the PowerShell activity generated on the endpoint.
 
----
+## Detection tuning
 
-## Suspicious PowerShell Detection
+The first detection treated both of these as suspicious:
 
-The query was then refined to search for specific command-line arguments commonly associated with suspicious PowerShell execution.
+- `-EncodedCommand`
+- `-NoProfile`
 
-```kql
-SecurityEvent
-| where TimeGenerated > ago(30m)
-| where EventID == 4688
-| where Process has "powershell.exe"
-| where CommandLine has_any ("EncodedCommand", "NoProfile")
-| project TimeGenerated, Computer, Account, Process, ParentProcessName, CommandLine
-| order by TimeGenerated desc
-```
+This was too broad.
+
+`-NoProfile` is commonly used in legitimate administration and scripting, so triggering an alert solely on that argument could generate unnecessary noise.
+
+The rule was tuned so that:
+
+| Test | Before tuning | After tuning |
+|---|---|---|
+| `-NoProfile` only | Alert | No alert |
+| `-EncodedCommand` | Alert | Alert |
+
+`-NoProfile` is still retained as investigation context, but it is no longer sufficient to create a detection.
+
+## Final detection logic
+
+The final query:
+
+- filters for Windows Event ID `4688`;
+- identifies `powershell.exe` and `pwsh.exe`;
+- normalizes process and command-line values to lowercase;
+- detects encoded-command usage;
+- records whether `-NoProfile` is also present;
+- alerts only when encoded execution is detected.
+
+The complete current query is stored in:
+
+[`queries/powershell-detection.kql`](queries/powershell-detection.kql)
+
+The core classification is:
+
+`Encoded PowerShell command`
+
 ![Suspicious PowerShell hunt](screenshots/10-suspicious-powershell-hunt.png)
-Both test commands were successfully identified.
 
----
-
-## Detection Classification
-
-To make the output easier to investigate, the query was extended to classify why an event was considered suspicious.
-
-```kql
-SecurityEvent
-| where TimeGenerated > ago(30m)
-| where EventID == 4688
-| where Process has "powershell.exe"
-| extend SuspiciousReason = case(
-    CommandLine has "EncodedCommand", "Encoded PowerShell",
-    CommandLine has "NoProfile", "PowerShell without profile",
-    "Other"
-)
-| where SuspiciousReason != "Other"
-| project TimeGenerated, Computer, Account, Process, SuspiciousReason, CommandLine
-| order by TimeGenerated desc
-```
-
-This produced two classifications:
-
-- Encoded PowerShell
-- PowerShell without profile
 ![PowerShell detection classification](screenshots/11-powershell-detection-classification.png)
----
 
-## Microsoft Sentinel Analytics Rule
+## Microsoft Sentinel analytics rule
 
-A scheduled analytics rule was created using the final detection logic.
+The KQL detection was converted into a scheduled Sentinel analytics rule.
 
-### Rule Name
-
-`Suspicious PowerShell Execution`
-
-### Severity
-
-`Medium`
-
-### Detection Query
-
-```kql
-SecurityEvent
-| where EventID == 4688
-| where Process has "powershell.exe"
-| extend SuspiciousReason = case(
-    CommandLine has "EncodedCommand", "Encoded PowerShell",
-    CommandLine has "NoProfile", "PowerShell without profile",
-    "Other"
-)
-| where SuspiciousReason != "Other"
-| project TimeGenerated, Computer, Account, Process, ParentProcessName, SuspiciousReason, CommandLine
-```
-
-### Rule Configuration
-
-- Query frequency: 5 minutes
-- Lookup period: 10 minutes
-- Alert threshold: greater than 0 results
-- Event grouping: one alert per event
-- Incident creation: enabled
-- Alert grouping: disabled
-
-Entity mapping was configured for:
-
-- Host
-- Account
 ![Analytics rule detection logic](screenshots/12a-analytics-rule-detection-logic.png)
+
+The rule schedule was configured separately.
 
 ![Analytics rule scheduling](screenshots/12b-analytics-rule-scheduling.png)
 
----
+## Incident generation
 
-## MITRE ATT&CK Mapping
+The controlled encoded PowerShell activity triggered a Microsoft Sentinel incident.
 
-The detection was mapped to:
-
-**Tactic:** Execution
-
-**Technique:** Command and Scripting Interpreter
-
-**Sub-technique:** PowerShell
-
-**MITRE ATT&CK ID:** `T1059.001`
-
-PowerShell is frequently used by both administrators and attackers. From a defensive perspective, command-line behavior and execution context must therefore be analyzed rather than treating PowerShell itself as malicious.
-
----
-
-## Incident Generation
-
-After the analytics rule was enabled, a new test PowerShell command using `-EncodedCommand` was executed.
-
-The new Event ID `4688` was received by Sentinel and matched the analytics rule.
-
-Microsoft Sentinel automatically generated an incident named:
-
-`Suspicious PowerShell Execution`
-
-The incident contained:
-
-- Medium severity;
-- Execution tactic;
-- affected Windows host;
-- affected user account;
-- associated alert;
-- host and account entity relationships.
 ![Suspicious PowerShell incident](screenshots/13-suspicious-powershell-incident.png)
 
-This confirmed the complete detection pipeline:
+## Incident investigation
 
-```text
-PowerShell Execution
-        |
-        v
-Windows Event ID 4688
-        |
-        v
-Azure Monitor Agent
-        |
-        v
-Log Analytics
-        |
-        v
-KQL Detection
-        |
-        v
-Scheduled Analytics Rule
-        |
-        v
-Alert
-        |
-        v
-Microsoft Sentinel Incident
-```
+The investigation reviewed:
 
----
+- affected host;
+- user account;
+- process name;
+- parent process;
+- command line;
+- encoded-command indicator;
+- surrounding endpoint activity.
 
-## Incident Investigation
+![Incident investigation](screenshots/14-incident-investigation-view.png)
 
-The Sentinel investigation view was used to review the generated incident.
-
-The investigation confirmed:
-
-- the affected endpoint;
-- the user account associated with the execution;
-- the suspicious PowerShell command line;
-- the related alert;
-- the mapped MITRE ATT&CK tactic;
-- the relationship between the affected user and host.
-![Incident investigation view](screenshots/14-incident-investigation-view.png)
+The incident summary captured the controlled activity.
 
 ![Incident summary](screenshots/15-incident-summary.png)
 
-The generated activity in this lab was authorized and intentionally created for testing.
+## Analyst assessment
 
-In a real SOC environment, the next step would be to determine whether the execution was expected administrative activity or part of a malicious sequence.
+Encoded PowerShell is not automatically malicious, but it increases investigation priority because encoded commands can hide the executed content from casual inspection.
 
----
+Relevant investigation questions include:
 
-## Investigation Approach
+- Who launched PowerShell?
+- What was the parent process?
+- What does the encoded content decode to?
+- Was the execution expected?
+- Did the process create files, network connections, or child processes?
+- Did the same host show other suspicious behavior?
+- Was the account authorized to perform the action?
 
-An analyst investigating a similar alert should review:
+In this lab, the encoded command decoded to the harmless command:
 
-1. The complete PowerShell command line.
-2. The parent process that launched PowerShell.
-3. The user account responsible for execution.
-4. Other process creation events before and after the alert.
-5. Authentication activity associated with the account.
-6. Whether the same command appeared on additional endpoints.
-7. Recently created users, services, scheduled tasks, or other persistence mechanisms.
-8. Additional endpoint or identity telemetry related to the host.
+`Get-Date`
 
-The goal is to determine whether the PowerShell execution represents legitimate administration, automation, or malicious activity.
+The final classification was therefore:
 
----
+`Benign Positive — authorized security testing`
 
-## Response and Remediation
+## MITRE ATT&CK mapping
 
-If suspicious PowerShell activity is detected, the following response steps should be considered:
+The behavior relates to PowerShell execution under:
 
-- Verify whether the execution was expected and authorized.
-- Review the full command line, parent process, user account, and related events.
-- Search for similar PowerShell activity across other endpoints.
-- Review the affected system for additional suspicious processes.
-- Investigate possible persistence mechanisms such as scheduled tasks, services, startup entries, or newly created accounts.
-- Check authentication logs for evidence of account compromise.
-- Preserve relevant logs and evidence for further investigation.
+`T1059.001 — Command and Scripting Interpreter: PowerShell`
 
-If malicious activity is confirmed:
+The lab demonstrates how PowerShell telemetry can be used for behavioral detection and investigation.
 
-- isolate the affected endpoint;
-- terminate malicious processes where appropriate;
-- disable or reset compromised accounts;
-- remove identified persistence mechanisms;
-- search the wider environment for related indicators;
-- perform further incident response and forensic analysis.
+## Detection limitations
 
----
+The final detection intentionally focuses on encoded PowerShell execution.
 
-## Detection Limitations
+Possible legitimate matches include:
 
-This detection identifies suspicious PowerShell characteristics but does not prove that malicious activity occurred.
+- enterprise administration scripts;
+- software deployment tooling;
+- endpoint-management platforms;
+- automation frameworks;
+- encoded commands used for operational reasons.
 
-For example:
+The rule does not automatically prove malicious intent.
 
-- `-NoProfile` is commonly used by legitimate administrators and automation scripts;
-- `-EncodedCommand` can also be used for legitimate purposes;
-- PowerShell is widely used for normal system administration.
+A production version could improve precision by adding:
 
-Because of this, alerts generated by this rule require additional investigation.
-
-In a production environment, the detection should be correlated with additional context such as:
-
-- parent process;
-- command content;
-- user behavior;
-- execution frequency;
-- endpoint history;
-- authentication activity;
-- PowerShell Script Block Logging;
-- EDR telemetry;
+- parent-process context;
+- user and host baselines;
+- encoded payload decoding;
+- known-good administrative exclusions;
+- process creation correlation;
 - network activity;
-- known administrative scripts.
+- Defender for Endpoint telemetry;
+- script block logging;
+- PowerShell operational logs;
+- signer or executable reputation.
 
-Known-good administrative activity could also be excluded after establishing an appropriate baseline.
+## What changed after testing
 
----
+| Finding | Change |
+|---|---|
+| Initial rule alerted on `-NoProfile` | Removed `NoProfile` as a standalone alert condition |
+| `NoProfile` still had investigation value | Retained it as contextual output |
+| Detection originally focused only on `powershell.exe` | Added support for `pwsh.exe` |
+| Case-sensitive comparisons could miss variants | Normalized process and command line values |
+| README contained large implementation details | Kept final KQL in a dedicated `.kql` file |
+| Control and positive cases were not clearly separated | Added explicit negative/control and positive validation |
 
-## Key Findings
-
-This project demonstrated that suspicious PowerShell behavior can be detected using native Windows process creation telemetry and Microsoft Sentinel.
-
-The most important outcome was not simply detecting the use of PowerShell, but building a complete workflow from endpoint activity to an actionable security incident.
-
-The lab demonstrated practical experience with:
-
-- Windows Security Events;
-- Event ID 4688;
-- endpoint logging;
-- Azure Monitor Agent;
-- Data Collection Rules;
-- Microsoft Sentinel;
-- Log Analytics;
-- KQL threat hunting;
-- detection engineering;
-- scheduled analytics rules;
-- entity mapping;
-- MITRE ATT&CK;
-- incident investigation;
-- response planning.
-
----
-
-## Screenshots
-
-The repository contains screenshots documenting the main stages of the investigation.
-
-```text
-screenshots/
-├── 01-resource-group-overview.png
-├── 02-vm-overview.png
-├── 03-nsg-rdp-restriction.png
-├── 04-sentinel-workspace-overview.png
-├── 05-dcr-windows-security-events.png
-├── 06-securityevent-logs.png
-├── 07-initial-kql-process-hunt.png
-├── 08-process-creation-auditing-enabled.png
-├── 08a-powershell-test-activity.png
-├── 09-powershell-process-events.png
-├── 10-suspicious-powershell-hunt.png
-├── 11-powershell-detection-classification.png
-├── 12a-analytics-rule-detection-logic.png
-├── 12b-analytics-rule-scheduling.png
-├── 13-suspicious-powershell-incident.png
-├── 14-incident-investigation-view.png
-└── 15-incident-summary.png
-```
-
-Sensitive Azure information such as subscription identifiers, public IP addresses, and unnecessary account information should be redacted before screenshots are published.
-
----
-
-## Repository Structure
+## Repository structure
 
 ```text
 sentinel-powershell-detection-and-response/
-│
 ├── README.md
 ├── incident-report.md
-│
 ├── queries/
 │   └── powershell-detection.kql
-│
 └── screenshots/
     ├── 01-resource-group-overview.png
     ├── 02-vm-overview.png
@@ -519,47 +314,10 @@ sentinel-powershell-detection-and-response/
     └── 15-incident-summary.png
 ```
 
----
+## Scope
 
-## Skills Demonstrated
+This project was built in a controlled Azure lab.
 
-- Microsoft Sentinel
-- Kusto Query Language
-- Windows Security Event analysis
-- Threat hunting
-- Detection engineering
-- Security monitoring
-- Incident investigation
-- MITRE ATT&CK
-- Windows process auditing
-- Azure Monitor Agent
-- Log Analytics
-- Data Collection Rules
-- Basic incident response
+The PowerShell activity was intentionally generated for defensive testing. The project demonstrates telemetry collection, detection engineering, tuning, and incident investigation.
 
----
-
-## Future Improvements
-
-Possible improvements to the detection include:
-
-- enabling PowerShell Script Block Logging;
-- incorporating Event ID `4104`;
-- correlating PowerShell activity with authentication events;
-- analyzing suspicious parent-child process relationships;
-- adding allowlists for approved administrative activity;
-- incorporating Microsoft Defender for Endpoint telemetry;
-- adding behavioral correlation across multiple events;
-- developing automated enrichment or triage through Microsoft Sentinel automation.
-
-These improvements would reduce false positives and provide stronger behavioral context during investigation.
-
----
-
-## Conclusion
-
-This project demonstrates a complete security monitoring workflow rather than an isolated detection query.
-
-A controlled PowerShell execution was generated on a Windows endpoint, captured through Windows Security auditing, collected in Microsoft Sentinel, analyzed with KQL, converted into a scheduled detection rule, and investigated as a Sentinel incident.
-
-The project provided hands-on experience with the core activities performed in SOC and Blue Team environments: collecting telemetry, identifying suspicious behavior, building detections, investigating alerts, mapping behavior to MITRE ATT&CK, and defining appropriate response actions.
+The rule should be tuned further before production use.

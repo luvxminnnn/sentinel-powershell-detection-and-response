@@ -1,10 +1,26 @@
 SecurityEvent
 | where EventID == 4688
-| where Process has "powershell.exe"
+| extend ProcessLower = tolower(Process)
+| extend CommandLineLower = tolower(CommandLine)
+| where ProcessLower has "powershell.exe"
+    or ProcessLower has "pwsh.exe"
+| extend HasEncodedCommand =
+    CommandLineLower matches regex @"(?i)(-enc(odedcommand)?\s)"
+| extend HasNoProfile =
+    CommandLineLower contains "-noprofile"
 | extend SuspiciousReason = case(
-    CommandLine has "EncodedCommand", "Encoded PowerShell",
-    CommandLine has "NoProfile", "PowerShell without profile",
+    HasEncodedCommand, "Encoded PowerShell command",
     "Other"
 )
 | where SuspiciousReason != "Other"
-| project TimeGenerated, Computer, Account, Process, ParentProcessName, SuspiciousReason, CommandLine
+| project
+    TimeGenerated,
+    Computer,
+    Account,
+    Process,
+    ParentProcessName,
+    CommandLine,
+    HasNoProfile,
+    HasEncodedCommand,
+    SuspiciousReason
+| order by TimeGenerated desc
